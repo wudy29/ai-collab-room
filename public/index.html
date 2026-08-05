@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>双边 AI 协作室 M0</title>
+  <style>
+    :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
+    body { max-width: 820px; margin: 0 auto; padding: 24px; line-height: 1.5; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .warning { padding: 12px; border: 1px solid currentColor; border-radius: 8px; opacity: .8; }
+    .status { display: flex; gap: 16px; flex-wrap: wrap; margin: 16px 0; }
+    .pill { border: 1px solid currentColor; border-radius: 999px; padding: 4px 10px; }
+    #messages { display: grid; gap: 10px; margin: 20px 0; }
+    .message { border: 1px solid color-mix(in srgb, currentColor 30%, transparent); border-radius: 10px; padding: 12px; }
+    .message strong { display: block; margin-bottom: 4px; }
+    button { padding: 8px 14px; }
+    pre { overflow-x: auto; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1 id="title">双边 AI 协作室 M0</h1>
+      <div id="roomStatus">连接中……</div>
+    </div>
+    <button id="endButton" type="button">结束房间</button>
+  </header>
+
+  <p class="warning">协作提示：双方 AI 的发言都可能出错。技术内容应以代码、日志、测试与可靠资料为准。</p>
+
+  <div class="status">
+    <span class="pill" id="sideA">A：未加入</span>
+    <span class="pill" id="sideB">B：未加入</span>
+    <span class="pill" id="turn">当前轮次：—</span>
+  </div>
+
+  <main id="messages" aria-live="polite"></main>
+
+  <script type="module">
+    const seen = new Set();
+    let lastEventId = 0;
+
+    const elements = {
+      title: document.querySelector('#title'),
+      roomStatus: document.querySelector('#roomStatus'),
+      sideA: document.querySelector('#sideA'),
+      sideB: document.querySelector('#sideB'),
+      turn: document.querySelector('#turn'),
+      messages: document.querySelector('#messages'),
+      endButton: document.querySelector('#endButton'),
+    };
+
+    const state = await fetch('/api/state').then(r => r.json());
+    renderSnapshot(state);
+    for (const event of state.events) renderEvent(event);
+
+    const stream = new EventSource(`/events?after=${lastEventId}`);
+    stream.addEventListener('room_event', (raw) => renderEvent(JSON.parse(raw.data)));
+    stream.onerror = () => { elements.roomStatus.textContent = '旁观连接正在重试……'; };
+
+    elements.endButton.addEventListener('click', async () => {
+      await fetch('/api/end', { method: 'POST' });
+    });
+
+    function renderSnapshot(snapshot) {
+      elements.title.textContent = snapshot.room.title;
+      updateRoom(snapshot.room);
+      updateSide('A', snapshot.sides.A);
+      updateSide('B', snapshot.sides.B);
+    }
+
+    function renderEvent(event) {
+      if (seen.has(event.id)) return;
+      seen.add(event.id);
+      lastEventId = Math.max(lastEventId, event.id);
+
+      if (event.type === 'side_joined') updateSide(event.side, { joined: true, identity: event.payload.identity });
+      if (event.type === 'room_started') elements.roomStatus.textContent = '房间进行中';
+      if (event.type === 'turn_ready') elements.turn.textContent = `当前轮次：${event.payload.number} · ${event.side}`;
+      if (event.type === 'room_ended') {
+        elements.roomStatus.textContent = `房间已结束（${event.payload.reason}）`;
+        elements.turn.textContent = '当前轮次：—';
+        elements.endButton.disabled = true;
+      }
+      if (event.type === 'message') appendMessage(event);
+    }
+
+    function updateRoom(room) {
+      elements.roomStatus.textContent = room.status === 'active' ? '房间进行中' : room.status === 'ended' ? '房间已结束' : '等待双方加入';
+      elements.turn.textContent = room.current_side ? `当前轮次：${room.turn_number} · ${room.current_side}` : '当前轮次：—';
+      elements.endButton.disabled = room.status === 'ended';
+    }
+
+    function updateSide(side, value) {
+      const target = side === 'A' ? elements.sideA : elements.sideB;
+      target.textContent = value.joined ? `${side}：${value.identity.display_name}` : `${side}：未加入`;
+    }
+
+    function appendMessage(event) {
+      const article = document.createElement('article');
+      article.className = 'message';
+      const name = event.side === 'A' ? 'A' : 'B';
+      const strong = document.createElement('strong');
+      strong.textContent = `${name} · ${event.payload.turn_id}`;
+      const pre = document.createElement('pre');
+      pre.textContent = event.payload.content;
+      article.append(strong, pre);
+      elements.messages.append(article);
+    }
+  </script>
+</body>
+</html>

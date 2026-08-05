@@ -1,0 +1,15 @@
+{
+  "name": "ai-collab-room-m0",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "M0 vertical slice for a bilateral AI collaboration room.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "demo": "node scripts/run-demo.js",
+    "test": "node --test"
+  }
+}
