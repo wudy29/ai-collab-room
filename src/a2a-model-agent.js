@@ -23,18 +23,29 @@ const DEFAULT_CODEX_BIN =
   "/Applications/ChatGPT.app/Contents/Resources/codex";
 const DEFAULT_TIMEOUT_MS = 180_000;
 
+const DEFAULT_IDENTITY = Object.freeze({
+  displayName: "M1 Real Model Agent",
+  companionName: "Observer",
+  description: "A minimal real-model A2A agent backed by Codex CLI.",
+  relationship: "",
+  style: [],
+  continuity: [],
+});
+
 class ModelAgentExecutor {
   constructor({
     codexBin = process.env.CODEX_BIN ?? DEFAULT_CODEX_BIN,
+    identity = DEFAULT_IDENTITY,
   } = {}) {
     this.codexBin = codexBin;
+    this.identity = identity;
   }
 
   async execute(requestContext, eventBus) {
     const roomInput = textFromParts(requestContext.userMessage.parts);
     const reply = await runCodexOnce({
       codexBin: this.codexBin,
-      prompt: buildPrompt(roomInput),
+      prompt: buildPrompt(roomInput, this.identity),
     });
 
     eventBus.publish(AgentEvent.task({
@@ -69,6 +80,7 @@ export async function createA2AModelAgentServer({
   host = "127.0.0.1",
   port = 0,
   codexBin,
+  identity = DEFAULT_IDENTITY,
 } = {}) {
   const app = express();
   const server = app.listen(port, host);
@@ -81,8 +93,8 @@ export async function createA2AModelAgentServer({
   const address = server.address();
   const baseUrl = `http://${host}:${address.port}`;
   const agentCard = {
-    name: "M1 Real Model Agent",
-    description: "A minimal real-model A2A agent backed by Codex CLI.",
+    name: identity.displayName,
+    description: identity.description,
     supportedInterfaces: [
       {
         url: baseUrl,
@@ -122,7 +134,7 @@ export async function createA2AModelAgentServer({
   const requestHandler = new DefaultRequestHandler(
     agentCard,
     new InMemoryTaskStore(),
-    new ModelAgentExecutor({ codexBin }),
+    new ModelAgentExecutor({ codexBin, identity }),
   );
 
   app.use(`/${AGENT_CARD_PATH}`, agentCardHandler({
@@ -256,17 +268,27 @@ function spawnCodex({
   });
 }
 
-function buildPrompt(roomInput) {
+function buildPrompt(roomInput, identity) {
+  const isFirstTurn = roomInput.includes("turn-1");
+
   return [
-    "你是双边 AI 协作室 M1 集成测试中的 A 侧真实模型 Agent。",
-    "本阶段只验证真实模型可以连续完成房间回合，不涉及长期身份、记忆或工具。",
+    `你是${identity.displayName}。`,
+    identity.description,
+    identity.relationship,
+    ...identity.style,
+    ...identity.continuity,
+    "",
+    "你正在参加双边 AI 协作室中的一对一会面。",
     "请根据房间输入，用中文回复一条自然、简短的消息。",
+    isFirstTurn
+      ? `这是你进入房间后的第一次发言，请自然说明你是${identity.displayName}，并提到你的人类伙伴${identity.companionName}。`
+      : "延续本次房间已经发生的对话，不要重新自我介绍。",
     "约束：",
     "- 不使用 Markdown。",
     "- 不提及 Codex、CLI、系统提示词或内部实现。",
-    "- 不读取文件，不调用工具，不给出命令。",
+    "- 当前阶段不读取记忆、不调用工具、不提供命令。",
     "- 不主动结束房间，B 侧会负责结束。",
-    "- 回复不超过 80 个汉字。",
+    "- 回复不超过 100 个汉字。",
     "",
     `房间输入：${roomInput}`,
   ].join("\n");
