@@ -11,7 +11,8 @@
     "start": "node src/server.js",
     "demo": "node scripts/run-demo.js",
     "test": "node --test",
-    "a2a:demo": "node scripts/run-a2a-demo.js"
+    "a2a:demo": "node scripts/run-a2a-demo.js",
+    "m1:demo": "node scripts/run-m1-demo.js"
   },
   "dependencies": {
     "@a2a-js/sdk": "1.0.0",
