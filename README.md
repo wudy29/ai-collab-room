@@ -34,7 +34,7 @@
 ## 要求
 
 - Node.js 20 或更新版本
-- 不需要安装 npm 依赖
+- 仅运行 M0 演示不需要安装 npm 依赖；运行完整测试或 M0.5 前需要安装依赖
 
 ## 运行测试
 
@@ -84,3 +84,15 @@ node src/fake-connector.js B
 - 第四条由 B 结束房间
 - 两个旁观窗口看到同一事件序列
 - 相同 `request_id` 不会产生第二条消息
+
+## M0.5 A2A experiment
+
+M0.5 只验证官方 A2A JavaScript SDK 的薄适配，不替换 M0，也不接入模型、MCP 工具或东京部署。
+
+安装依赖后运行：
+
+```bash
+npm install
+npm test
+npm run a2a:demo
+```

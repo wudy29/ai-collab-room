@@ -10,6 +10,11 @@
   "scripts": {
     "start": "node src/server.js",
     "demo": "node scripts/run-demo.js",
-    "test": "node --test"
+    "test": "node --test",
+    "a2a:demo": "node scripts/run-a2a-demo.js"
+  },
+  "dependencies": {
+    "@a2a-js/sdk": "1.0.0",
+    "express": "5.1.0"
   }
 }
