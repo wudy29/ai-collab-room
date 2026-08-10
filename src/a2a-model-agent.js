@@ -32,29 +32,34 @@ const DEFAULT_IDENTITY = Object.freeze({
   continuity: [],
 });
 
-class ModelAgentExecutor {
+export class ModelAgentExecutor {
   constructor({
     codexBin = process.env.CODEX_BIN ?? DEFAULT_CODEX_BIN,
     identity = DEFAULT_IDENTITY,
     continuityContext,
+    runModel = runCodexOnce,
   } = {}) {
     this.codexBin = codexBin;
     this.identity = identity;
     this.continuityContext = continuityContext;
+    this.runModel = runModel;
+    this.hasCompletedReply = false;
   }
 
   async execute(requestContext, eventBus) {
     const roomInput = textFromParts(requestContext.userMessage.parts);
-    const reply = await runCodexOnce({
+    const isFirstTurn = !this.hasCompletedReply;
+    const reply = await this.runModel({
       codexBin: this.codexBin,
       prompt: buildPrompt(
         roomInput,
         this.identity,
         this.continuityContext,
+        isFirstTurn,
       ),
     });
 
-    eventBus.publish(AgentEvent.task({
+    await eventBus.publish(AgentEvent.task({
       id: requestContext.taskId,
       contextId: requestContext.contextId,
       status: {
@@ -75,6 +80,7 @@ class ModelAgentExecutor {
       history: [requestContext.userMessage],
       metadata: requestContext.userMessage.metadata,
     }));
+    this.hasCompletedReply = true;
   }
 
   async cancelTask() {
@@ -284,9 +290,7 @@ function spawnCodex({
   });
 }
 
-function buildPrompt(roomInput, identity, continuityContext) {
-  const isFirstTurn = roomInput.includes("turn-1");
-
+function buildPrompt(roomInput, identity, continuityContext, isFirstTurn) {
   return [
     `你是${identity.displayName}。`,
     identity.description,
