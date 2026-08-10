@@ -23,7 +23,7 @@ M2d 不重新打开、修改目标或重复验收 M2c。M2d 只处理 M2c 之后
 
 ## 2. 核心原则
 
-> **Room owns messages, not agents.**  
+> **Room owns messages, not agents.**
 > **房间负责消息交换，不拥有 Agent。**
 
 更精确地说：
