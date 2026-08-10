@@ -15,7 +15,8 @@
     "m1:demo": "node scripts/run-m1-demo.js",
     "m2a:demo": "node scripts/run-m2a-demo.js",
     "m2b:demo": "node scripts/run-m2b-demo.js",
-    "m2c:demo": "node scripts/run-m2c-demo.js"
+    "m2c:demo": "node scripts/run-m2c-demo.js",
+    "m2d:demo": "node scripts/run-m2d-demo.js"
   },
   "dependencies": {
     "@a2a-js/sdk": "1.0.0",
