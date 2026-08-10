@@ -83,6 +83,57 @@ test("isolates first-success state across executors", async () => {
   assert.match(promptsB[0], /这是你进入房间后的第一次发言/);
 });
 
+test("keeps caller-owned continuity isolated across executors", async () => {
+  const promptsA = [];
+  const promptsB = [];
+
+  const identityA = Object.freeze({
+    displayName: "徳牧先生",
+    companionName: "小猫",
+    description: "A 侧测试身份。",
+    relationship: "",
+    style: [],
+    continuity: [],
+  });
+  const identityB = Object.freeze({
+    displayName: "独立 B Agent",
+    companionName: "B 侧测试用户",
+    description: "B 侧自行准备的独立测试身份。",
+    relationship: "",
+    style: [],
+    continuity: [],
+  });
+
+  const executorA = new ModelAgentExecutor({
+    identity: identityA,
+    continuityContext: "A 私有连续性：窗边铜铃提醒收回稿纸。",
+    runModel: async ({ prompt }) => {
+      promptsA.push(prompt);
+      return "A 回复";
+    },
+  });
+  const executorB = new ModelAgentExecutor({
+    identity: identityB,
+    continuityContext: "B 私有连续性：桌角有一张写着“蓝色纸鹤”的便签。",
+    runModel: async ({ prompt }) => {
+      promptsB.push(prompt);
+      return "B 回复";
+    },
+  });
+
+  await executorA.execute(request("task-a", "turn-1"), eventBus());
+  await executorB.execute(request("task-b", "turn-2"), eventBus());
+
+  assert.match(promptsA[0], /徳牧先生/);
+  assert.match(promptsA[0], /窗边铜铃/);
+  assert.doesNotMatch(promptsA[0], /蓝色纸鹤/);
+
+  assert.match(promptsB[0], /独立 B Agent/);
+  assert.match(promptsB[0], /B 侧测试用户/);
+  assert.match(promptsB[0], /蓝色纸鹤/);
+  assert.doesNotMatch(promptsB[0], /窗边铜铃/);
+});
+
 function createExecutor(prompts) {
   return new ModelAgentExecutor({
     identity,

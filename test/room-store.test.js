@@ -66,3 +66,26 @@ test("waitTurn resolves when the side becomes current", async () => {
   assert.equal(result.turn.side, "B");
   assert.equal(result.turn.turn_id, "turn-2");
 });
+
+test("stores only public participant labels", () => {
+  const store = new RoomStore({ maxTurns: 4 });
+
+  store.join("B", {
+    display_name: "独立 B Agent",
+    companion_name: "B 侧测试用户",
+    description: "不应进入 Room",
+    relationship: "不应进入 Room",
+    style: ["不应进入 Room"],
+    continuity: ["不应进入 Room"],
+    memory_source: "不应进入 Room",
+  });
+
+  assert.deepEqual(store.sides.B.identity, {
+    display_name: "独立 B Agent",
+    companion_name: "B 侧测试用户",
+  });
+  assert.deepEqual(
+    Object.keys(store.sides.B.identity).sort(),
+    ["companion_name", "display_name"],
+  );
+});
