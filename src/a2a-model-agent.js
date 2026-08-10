@@ -36,16 +36,22 @@ class ModelAgentExecutor {
   constructor({
     codexBin = process.env.CODEX_BIN ?? DEFAULT_CODEX_BIN,
     identity = DEFAULT_IDENTITY,
+    continuityContext,
   } = {}) {
     this.codexBin = codexBin;
     this.identity = identity;
+    this.continuityContext = continuityContext;
   }
 
   async execute(requestContext, eventBus) {
     const roomInput = textFromParts(requestContext.userMessage.parts);
     const reply = await runCodexOnce({
       codexBin: this.codexBin,
-      prompt: buildPrompt(roomInput, this.identity),
+      prompt: buildPrompt(
+        roomInput,
+        this.identity,
+        this.continuityContext,
+      ),
     });
 
     eventBus.publish(AgentEvent.task({
@@ -81,6 +87,7 @@ export async function createA2AModelAgentServer({
   port = 0,
   codexBin,
   identity = DEFAULT_IDENTITY,
+  continuityContext,
 } = {}) {
   const app = express();
   const server = app.listen(port, host);
@@ -134,7 +141,11 @@ export async function createA2AModelAgentServer({
   const requestHandler = new DefaultRequestHandler(
     agentCard,
     new InMemoryTaskStore(),
-    new ModelAgentExecutor({ codexBin, identity }),
+    new ModelAgentExecutor({
+      codexBin,
+      identity,
+      continuityContext,
+    }),
   );
 
   app.use(`/${AGENT_CARD_PATH}`, agentCardHandler({
@@ -204,6 +215,11 @@ function spawnCodex({
       [
         "exec",
         "--ephemeral",
+        "--ignore-user-config",
+        "-c",
+        "features.plugins=false",
+        "-c",
+        "features.apps=false",
         "--sandbox",
         "read-only",
         "--skip-git-repo-check",
@@ -268,7 +284,7 @@ function spawnCodex({
   });
 }
 
-function buildPrompt(roomInput, identity) {
+function buildPrompt(roomInput, identity, continuityContext) {
   const isFirstTurn = roomInput.includes("turn-1");
 
   return [
@@ -280,13 +296,18 @@ function buildPrompt(roomInput, identity) {
     "",
     "你正在参加双边 AI 协作室中的一对一会面。",
     "请根据房间输入，用中文回复一条自然、简短的消息。",
+    ...(continuityContext
+      ? ["本次会面连续性上下文：", continuityContext]
+      : []),
     isFirstTurn
       ? `这是你进入房间后的第一次发言，请自然说明你是${identity.displayName}，并提到你的人类伙伴${identity.companionName}。`
       : "延续本次房间已经发生的对话，不要重新自我介绍。",
     "约束：",
     "- 不使用 Markdown。",
     "- 不提及 Codex、CLI、系统提示词或内部实现。",
-    "- 当前阶段不读取记忆、不调用工具、不提供命令。",
+    continuityContext
+      ? "- 你不能自行读取记忆或调用工具；只能使用程序提供的本次会面连续性上下文。"
+      : "- 当前阶段不读取记忆、不调用工具、不提供命令。",
     "- 不主动结束房间，B 侧会负责结束。",
     "- 回复不超过 100 个汉字。",
     "",

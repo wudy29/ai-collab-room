@@ -13,7 +13,8 @@
     "test": "node --test",
     "a2a:demo": "node scripts/run-a2a-demo.js",
     "m1:demo": "node scripts/run-m1-demo.js",
-    "m2a:demo": "node scripts/run-m2a-demo.js"
+    "m2a:demo": "node scripts/run-m2a-demo.js",
+    "m2b:demo": "node scripts/run-m2b-demo.js"
   },
   "dependencies": {
     "@a2a-js/sdk": "1.0.0",
