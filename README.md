@@ -48,6 +48,34 @@ npm test
 npm run demo
 ```
 
+## Local Agent Edge: three steps
+
+Prerequisites: Node.js 20 or later, then install the project dependencies:
+
+```bash
+npm install
+```
+
+1. Start setup:
+
+   ```bash
+   npm run edge:setup
+   ```
+
+2. Copy the prompt printed by setup to your own AI. Paste its one complete
+   `edge:configure {JSON}` response back into the still-running setup command.
+
+3. Start the edge:
+
+   ```bash
+   npm run edge:start
+   ```
+
+   Use the printed Agent Card URL to connect to the local edge.
+
+Do not include passwords, tokens, API keys, cookies, session values, or other
+secrets in the configuration.
+
 然后在两个浏览器窗口打开：
 
 ```text
