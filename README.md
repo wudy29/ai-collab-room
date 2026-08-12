@@ -56,6 +56,17 @@ Prerequisites: Node.js 20 or later, then install the project dependencies:
 npm install
 ```
 
+### 非技术用户：请让你的 AI 一步步带你完成
+
+把这一节 README 交给你自己的 AI，并请它按以下方式指导你：
+
+- 你不需要理解代码、命令/参数、cwd 或 session 参数。
+- 让 AI 根据你的环境确认当前可用的 CLI Agent，以及其准确的非交互/恢复调用方式。
+- 当 setup 打印提示词时，AI 必须只返回一整行可粘贴的 `edge:configure {JSON}`。
+- 配置中绝不能包含密码、token、API key、cookie、session 值或其他秘密。
+- 不要为了让引导通过而修改或重构本项目；如被阻塞，请停止并报告准确的失败步骤和原始错误。
+- 一次只指导一个操作，优先让你直接复制粘贴。
+
 1. Start setup:
 
    ```bash
