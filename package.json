@@ -17,6 +17,7 @@
     "m2b:demo": "node scripts/run-m2b-demo.js",
     "m2c:demo": "node scripts/run-m2c-demo.js",
     "m2d:demo": "node scripts/run-m2d-demo.js",
+    "m2e:validate": "node scripts/run-m2e-two-machine-private-ssh-validation.js",
     "edge:setup": "node local-agent-edge/onboarding.js setup",
     "edge:start": "node local-agent-edge/onboarding.js start"
   },
