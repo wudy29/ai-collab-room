@@ -58,6 +58,7 @@ function spawnOnce({
       cwd,
       env,
       stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32",
       shell: false,
     });
 
@@ -76,16 +77,16 @@ function spawnOnce({
       if (settled) return;
       settled = true;
       clearTimers();
-      child.kill("SIGTERM");
+      signalChild(child, "SIGTERM");
       reject(error);
     };
 
     const timeoutTimer = setTimeout(() => {
       if (settled) return;
       timedOut = true;
-      child.kill("SIGTERM");
+      signalChild(child, "SIGTERM");
       killTimer = setTimeout(() => {
-        child.kill("SIGKILL");
+        signalChild(child, "SIGKILL");
       }, KILL_GRACE_MS);
       killTimer.unref();
     }, timeoutMs);
@@ -101,7 +102,7 @@ function spawnOnce({
     });
 
     child.stdin.on("error", (error) => {
-      if (error.code !== "EPIPE") failEarly(error);
+      failEarly(error);
     });
 
     child.once("error", (error) => {
@@ -138,4 +139,21 @@ function spawnOnce({
 
     child.stdin.end(prompt);
   });
+}
+
+function signalChild(child, signal) {
+  if (process.platform === "win32") {
+    child.kill(signal);
+    return;
+  }
+
+  if (!Number.isInteger(child.pid)) return;
+
+  try {
+    process.kill(-child.pid, signal);
+  } catch (error) {
+    if (error.code !== "ESRCH") {
+      throw error;
+    }
+  }
 }

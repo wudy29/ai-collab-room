@@ -103,6 +103,80 @@ setInterval(() => {}, 1_000);
   );
 });
 
+test("generic CLI driver rejects child stdin EPIPE instead of returning stdout", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "local-agent-edge-epipe-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const workdir = path.join(root, "workdir");
+  await mkdir(workdir);
+  const closesStdin = path.join(root, "closes-stdin");
+  await writeExecutable(closesStdin, `
+const { closeSync } = require("node:fs");
+closeSync(0);
+process.stdout.write("false-success");
+setTimeout(() => process.exit(0), 200);
+`);
+
+  await assert.rejects(
+    createGenericCliDriver({
+      command: closesStdin,
+      cwd: workdir,
+      timeoutMs: 2_000,
+    }).run("x".repeat(16 * 1024 * 1024)),
+    (error) => {
+      assert.equal(error.code, "EPIPE");
+      return true;
+    },
+  );
+});
+
+test(
+  "generic CLI driver rejects on timeout when a descendant inherits stdio",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    const root = await mkdtemp(path.join(tmpdir(), "local-agent-edge-group-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+
+    const workdir = path.join(root, "workdir");
+    await mkdir(workdir);
+    const exitsWithDescendant = path.join(root, "exits-with-descendant");
+    await writeExecutable(exitsWithDescendant, `
+const { spawn } = require("node:child_process");
+process.stdin.resume();
+process.stdin.on("end", () => {
+  spawn(
+    process.execPath,
+    ["-e", "setTimeout(() => process.exit(0), 1_000)"],
+    { stdio: "inherit" },
+  );
+  process.exit(0);
+});
+`);
+
+    const driver = createGenericCliDriver({
+      command: exitsWithDescendant,
+      cwd: workdir,
+      timeoutMs: 80,
+    });
+
+    let guardTimer;
+    const pendingGuard = new Promise((_, reject) => {
+      guardTimer = setTimeout(() => {
+        reject(new Error("driver remained pending after timeout"));
+      }, 500);
+    });
+
+    try {
+      await assert.rejects(
+        Promise.race([driver.run("x"), pendingGuard]),
+        /timed out/,
+      );
+    } finally {
+      clearTimeout(guardTimer);
+    }
+  },
+);
+
 test("Local Agent Edge exposes localhost A2A and returns driver text", async (t) => {
   const prompts = [];
   const edge = await createLocalAgentEdge({
@@ -117,6 +191,7 @@ test("Local Agent Edge exposes localhost A2A and returns driver text", async (t)
   t.after(() => edge.close());
 
   assert.match(edge.baseUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
+  assert.equal(edge.server.address().address, "127.0.0.1");
 
   const cardResponse = await fetch(edge.agentCardUrl);
   assert.equal(cardResponse.status, 200);
