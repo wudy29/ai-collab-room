@@ -200,7 +200,11 @@ test("cloud-room configuration persists atomically with 0600 and is git-ignored"
 
   const configPath = path.join(configDir, ".cloud-room.json");
   const fileStat = await stat(configPath);
-  assert.equal(fileStat.mode & 0o777, 0o600);
+  if (process.platform !== "win32") {
+    // Windows has no POSIX permission bits; stat().mode only distinguishes
+    // read-only vs writable there, so 0600 is only assertable on POSIX.
+    assert.equal(fileStat.mode & 0o777, 0o600);
+  }
 
   const expected = {
     roomOrigin: "https://room.example",

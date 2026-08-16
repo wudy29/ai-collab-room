@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { buildComspecCommandLine, getEnvValue } from "./command-resolution.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const KILL_GRACE_MS = 1_000;
@@ -9,6 +10,9 @@ export function createGenericCliDriver({
   cwd,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   env = process.env,
+  commandType = "native",
+  platform = process.platform,
+  spawnFn = spawn,
 } = {}) {
   if (typeof command !== "string" || !command.trim()) {
     throw new TypeError("command must be a non-empty string");
@@ -40,6 +44,9 @@ export function createGenericCliDriver({
         timeoutMs,
         env,
         prompt,
+        commandType,
+        platform,
+        spawnFn,
       });
     },
   });
@@ -52,15 +59,34 @@ function spawnOnce({
   timeoutMs,
   env,
   prompt,
+  commandType,
+  platform,
+  spawnFn,
 }) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd,
-      env,
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: process.platform !== "win32",
-      shell: false,
-    });
+    let child;
+    if (commandType === "batch" && platform === "win32") {
+      // .cmd/.bat cannot be spawned directly on Windows; run them through
+      // the Windows command processor with the approved quoting contract.
+      const comspec = getEnvValue(env, "ComSpec", platform) ?? "cmd.exe";
+      const commandLine = buildComspecCommandLine({ path: command, args });
+      child = spawnFn(comspec, ["/d", "/s", "/c", commandLine], {
+        cwd,
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+        shell: false,
+        windowsVerbatimArguments: true,
+      });
+    } else {
+      // Native executables (and every non-win32 command) keep direct spawn.
+      child = spawnFn(command, args, {
+        cwd,
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: platform !== "win32",
+        shell: false,
+      });
+    }
 
     let stdout = "";
     let stderr = "";

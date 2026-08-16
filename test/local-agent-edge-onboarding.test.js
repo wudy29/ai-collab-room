@@ -72,10 +72,14 @@ test("configuration storage is private and setup prints a copy/paste prompt", as
 
   await writeLocalAgentEdgeConfig({ configDir, config });
   assert.deepEqual(await readLocalAgentEdgeConfig({ configDir }), config);
-  assert.equal(
-    (await stat(path.join(configDir, ".local-agent-edge.json"))).mode & 0o777,
-    0o600,
-  );
+  if (process.platform !== "win32") {
+    // Windows has no POSIX permission bits; stat().mode only distinguishes
+    // read-only vs writable there, so 0600 is only assertable on POSIX.
+    assert.equal(
+      (await stat(path.join(configDir, ".local-agent-edge.json"))).mode & 0o777,
+      0o600,
+    );
+  }
 
   const output = new PassThrough();
   let text = "";
@@ -203,8 +207,15 @@ test("main setup and start entrypoint exposes an Agent Card and closes on SIGTER
   assert.equal(response.status, 200);
   start.child.kill("SIGTERM");
   const result = await start.exited;
-  assert.equal(result.code, 0);
-  assert.equal(result.signal, null);
+  if (process.platform === "win32") {
+    // On Windows, child.kill() terminates via TerminateProcess; the child
+    // never runs its SIGTERM handler and does not exit normally, so Node
+    // reports code === null per the documented 'exit' semantics.
+    assert.equal(result.code, null);
+  } else {
+    assert.equal(result.code, 0);
+    assert.equal(result.signal, null);
+  }
 });
 
 async function failedStart(startConfiguredLocalAgentEdge, options) {

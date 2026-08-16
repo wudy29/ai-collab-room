@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn as realSpawn } from "node:child_process";
 import {
   chmod,
   mkdir,
@@ -13,6 +14,7 @@ import test from "node:test";
 import { Role, TaskState } from "@a2a-js/sdk";
 import { ClientFactory } from "@a2a-js/sdk/client";
 import { createGenericCliDriver } from "../local-agent-edge/generic-cli-driver.js";
+import { mergeEffectiveEnv } from "../local-agent-edge/command-resolution.js";
 import { createLocalAgentEdge } from "../local-agent-edge/a2a-edge.js";
 import { createClaudeCodeDriver } from "../local-agent-edge/claude-code.js";
 
@@ -22,8 +24,8 @@ test("generic CLI driver passes fixed argv, stdin and cwd and returns stdout", a
 
   const workdir = path.join(root, "workdir");
   await mkdir(workdir);
-  const fakeCli = path.join(root, "fake-cli");
-  await writeExecutable(fakeCli, `
+  const fakeCli = path.join(root, "fake-cli.js");
+  await writeFile(fakeCli, `
 let input = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => input += chunk);
@@ -37,8 +39,8 @@ process.stdin.on("end", () => {
 `);
 
   const driver = createGenericCliDriver({
-    command: fakeCli,
-    args: ["--alpha", "two"],
+    command: process.execPath,
+    args: [fakeCli, "--alpha", "two"],
     cwd: workdir,
     timeoutMs: 2_000,
   });
@@ -57,8 +59,8 @@ test("generic CLI driver rejects nonzero exit, empty stdout and timeout", async 
   const workdir = path.join(root, "workdir");
   await mkdir(workdir);
 
-  const nonzero = path.join(root, "nonzero");
-  await writeExecutable(nonzero, `
+  const nonzero = path.join(root, "nonzero.js");
+  await writeFile(nonzero, `
 process.stdin.resume();
 process.stdin.on("end", () => {
   process.stderr.write("boom");
@@ -67,35 +69,38 @@ process.stdin.on("end", () => {
 `);
   await assert.rejects(
     createGenericCliDriver({
-      command: nonzero,
+      command: process.execPath,
+      args: [nonzero],
       cwd: workdir,
       timeoutMs: 2_000,
     }).run("x"),
     /code 7: boom/,
   );
 
-  const empty = path.join(root, "empty");
-  await writeExecutable(empty, `
+  const empty = path.join(root, "empty.js");
+  await writeFile(empty, `
 process.stdin.resume();
 process.stdin.on("end", () => process.exit(0));
 `);
   await assert.rejects(
     createGenericCliDriver({
-      command: empty,
+      command: process.execPath,
+      args: [empty],
       cwd: workdir,
       timeoutMs: 2_000,
     }).run("x"),
     /empty stdout/,
   );
 
-  const slow = path.join(root, "slow");
-  await writeExecutable(slow, `
+  const slow = path.join(root, "slow.js");
+  await writeFile(slow, `
 process.stdin.resume();
 setInterval(() => {}, 1_000);
 `);
   await assert.rejects(
     createGenericCliDriver({
-      command: slow,
+      command: process.execPath,
+      args: [slow],
       cwd: workdir,
       timeoutMs: 80,
     }).run("x"),
@@ -109,8 +114,8 @@ test("generic CLI driver rejects child stdin EPIPE instead of returning stdout",
 
   const workdir = path.join(root, "workdir");
   await mkdir(workdir);
-  const closesStdin = path.join(root, "closes-stdin");
-  await writeExecutable(closesStdin, `
+  const closesStdin = path.join(root, "closes-stdin.js");
+  await writeFile(closesStdin, `
 const { closeSync } = require("node:fs");
 closeSync(0);
 process.stdout.write("false-success");
@@ -119,7 +124,8 @@ setTimeout(() => process.exit(0), 200);
 
   await assert.rejects(
     createGenericCliDriver({
-      command: closesStdin,
+      command: process.execPath,
+      args: [closesStdin],
       cwd: workdir,
       timeoutMs: 2_000,
     }).run("x".repeat(16 * 1024 * 1024)),
@@ -139,8 +145,8 @@ test(
 
     const workdir = path.join(root, "workdir");
     await mkdir(workdir);
-    const exitsWithDescendant = path.join(root, "exits-with-descendant");
-    await writeExecutable(exitsWithDescendant, `
+    const exitsWithDescendant = path.join(root, "exits-with-descendant.js");
+    await writeFile(exitsWithDescendant, `
 const { spawn } = require("node:child_process");
 process.stdin.resume();
 process.stdin.on("end", () => {
@@ -154,7 +160,8 @@ process.stdin.on("end", () => {
 `);
 
     const driver = createGenericCliDriver({
-      command: exitsWithDescendant,
+      command: process.execPath,
+      args: [exitsWithDescendant],
       cwd: workdir,
       timeoutMs: 80,
     });
@@ -232,23 +239,30 @@ test("Local Agent Edge maps driver rejection to an A2A failed task", async (t) =
   assert.equal(extractResultText(result), "");
 });
 
-test("Claude Code composition uses exact resume argv and does not persist session state", async (t) => {
-  assert.throws(
-    () => createClaudeCodeDriver({ sessionId: "", workdir: "/tmp" }),
-    /sessionId/,
-  );
-  assert.throws(
-    () => createClaudeCodeDriver({ sessionId: "session", workdir: "" }),
-    /workdir/,
-  );
+test(
+  "Claude Code composition uses exact resume argv and does not persist session state",
+  // The legacy composition test executes a fake executable directly, which
+  // requires POSIX executable semantics; on Windows the fake CLI cannot be
+  // launched without expanding the production API, so it is skipped there
+  // (Windows command resolution/launch is covered by the dedicated tests).
+  { skip: process.platform === "win32" },
+  async (t) => {
+    assert.throws(
+      () => createClaudeCodeDriver({ sessionId: "", workdir: "/tmp" }),
+      /sessionId/,
+    );
+    assert.throws(
+      () => createClaudeCodeDriver({ sessionId: "session", workdir: "" }),
+      /workdir/,
+    );
 
-  const root = await mkdtemp(path.join(tmpdir(), "local-agent-edge-claude-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+    const root = await mkdtemp(path.join(tmpdir(), "local-agent-edge-claude-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
 
-  const workdir = path.join(root, "workdir");
-  await mkdir(workdir);
-  const fakeClaude = path.join(root, "fake-claude");
-  await writeExecutable(fakeClaude, `
+    const workdir = path.join(root, "workdir");
+    await mkdir(workdir);
+    const fakeClaude = path.join(root, "fake-claude");
+    await writeExecutable(fakeClaude, `
 let input = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => input += chunk);
@@ -261,21 +275,173 @@ process.stdin.on("end", () => {
 });
 `);
 
-  const before = await readdir(workdir);
-  const driver = createClaudeCodeDriver({
-    sessionId: "test-session",
-    workdir,
-    claudeBin: fakeClaude,
+    const before = await readdir(workdir);
+    const driver = createClaudeCodeDriver({
+      sessionId: "test-session",
+      workdir,
+      claudeBin: fakeClaude,
+      timeoutMs: 2_000,
+    });
+
+    const result = JSON.parse(await driver.run("room-prompt"));
+    const after = await readdir(workdir);
+
+    assert.deepEqual(result.args, ["-p", "--resume", "test-session"]);
+    assert.equal(result.stdin, "room-prompt");
+    assert.equal(await canonicalPath(result.cwd), await canonicalPath(workdir));
+    assert.deepEqual(after, before);
+  },
+);
+
+test("generic CLI driver launches .cmd/.bat through ComSpec on win32 with the approved command line", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "local-agent-edge-batch-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const calls = [];
+  const spawn = (command, args, options) => {
+    calls.push({ command, args, options });
+    return realSpawn(process.execPath, [
+      "-e",
+      "process.stdin.resume();process.stdin.on('end',()=>process.stdout.write('batch-reply'))",
+    ], {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: options.stdio,
+    });
+  };
+
+  const effectiveEnv = mergeEffectiveEnv({
+    baseEnv: { Path: "C:\\tools", TERM: "x" },
+    overrideEnv: { PATH: "C:\\tools", COMSPEC: "C:\\Windows\\System32\\cmd.exe" },
+    platform: "win32",
+  });
+  const driver = createGenericCliDriver({
+    command: "C:\\tools\\my tool.cmd",
+    commandType: "batch",
+    args: ["--alpha", "two"],
+    cwd: root,
+    env: effectiveEnv,
     timeoutMs: 2_000,
+    platform: "win32",
+    spawnFn: spawn,
   });
 
-  const result = JSON.parse(await driver.run("room-prompt"));
-  const after = await readdir(workdir);
+  const reply = await driver.run("prompt");
+  assert.equal(reply, "batch-reply");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, "C:\\Windows\\System32\\cmd.exe");
+  assert.deepEqual(calls[0].args, [
+    "/d",
+    "/s",
+    "/c",
+    '""C:\\tools\\my tool.cmd" "--alpha" "two""',
+  ]);
+  assert.equal(calls[0].options.shell, false);
+  assert.equal(calls[0].options.windowsVerbatimArguments, true);
+  assert.deepEqual(calls[0].options.stdio, ["pipe", "pipe", "pipe"]);
+  assert.equal(calls[0].options.cwd, root);
+  // the launcher receives the same effective env the resolver used
+  assert.equal(calls[0].options.env, effectiveEnv);
+});
 
-  assert.deepEqual(result.args, ["-p", "--resume", "test-session"]);
-  assert.equal(result.stdin, "room-prompt");
-  assert.equal(await canonicalPath(result.cwd), await canonicalPath(workdir));
-  assert.deepEqual(after, before);
+test("generic CLI driver falls back to cmd.exe when ComSpec is absent", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "local-agent-edge-comspec-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const calls = [];
+  const spawn = (command, args, options) => {
+    calls.push({ command, args, options });
+    return realSpawn(process.execPath, [
+      "-e",
+      "process.stdin.resume();process.stdin.on('end',()=>process.stdout.write('ok'))",
+    ], {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: options.stdio,
+    });
+  };
+
+  const driver = createGenericCliDriver({
+    command: "C:\\tools\\run.cmd",
+    commandType: "batch",
+    args: [],
+    cwd: root,
+    env: {},
+    timeoutMs: 2_000,
+    platform: "win32",
+    spawnFn: spawn,
+  });
+
+  await driver.run("x");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, "cmd.exe");
+  assert.deepEqual(calls[0].args, ["/d", "/s", "/c", '""C:\\tools\\run.cmd""']);
+});
+
+test("generic CLI driver rejects dangerous argv before spawning a batch", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "local-agent-edge-badargv-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  let spawnCalls = 0;
+  const spawn = () => {
+    spawnCalls += 1;
+    return realSpawn(process.execPath, [
+      "-e",
+      "process.stdin.resume();process.stdin.on('end',()=>process.stdout.write('x'))",
+    ], { stdio: ["pipe", "pipe", "pipe"] });
+  };
+
+  const driver = createGenericCliDriver({
+    command: "C:\\tools\\run.cmd",
+    commandType: "batch",
+    args: ['say"hi'],
+    cwd: root,
+    env: { ComSpec: "cmd.exe" },
+    timeoutMs: 2_000,
+    platform: "win32",
+    spawnFn: spawn,
+  });
+
+  await assert.rejects(driver.run("x"), /Windows command processor/);
+  assert.equal(spawnCalls, 0);
+});
+
+test("generic CLI driver keeps native spawn on win32 and never routes through ComSpec", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "local-agent-edge-native-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const calls = [];
+  const spawn = (command, args, options) => {
+    calls.push({ command, args, options });
+    return realSpawn(process.execPath, [
+      "-e",
+      "process.stdin.resume();process.stdin.on('end',()=>process.stdout.write('native-reply'))",
+    ], {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: options.stdio,
+    });
+  };
+
+  const driver = createGenericCliDriver({
+    command: "C:\\tools\\native.exe",
+    args: ["--flag"],
+    cwd: root,
+    env: { PATH: "C:\\tools" },
+    timeoutMs: 2_000,
+    platform: "win32",
+    spawnFn: spawn,
+  });
+
+  const reply = await driver.run("x");
+  assert.equal(reply, "native-reply");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, "C:\\tools\\native.exe");
+  assert.deepEqual(calls[0].args, ["--flag"]);
+  assert.equal(calls[0].options.shell, false);
+  assert.equal(calls[0].options.detached, false);
+  assert.equal(calls[0].options.windowsVerbatimArguments, undefined);
+  assert.deepEqual(calls[0].options.stdio, ["pipe", "pipe", "pipe"]);
 });
 
 function messageRequest(messageId, text) {

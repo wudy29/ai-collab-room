@@ -1,9 +1,8 @@
-import { access } from "node:fs/promises";
-import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 import { createLocalAgentEdge } from "./a2a-edge.js";
 import { createGenericCliDriver } from "./generic-cli-driver.js";
+import { mergeEffectiveEnv, resolveConfiguredCommand } from "./command-resolution.js";
 import {
   parseConfigurationCommand,
   readLocalAgentEdgeConfig,
@@ -56,13 +55,26 @@ export async function startConfiguredLocalAgentEdge({
 } = {}) {
   try {
     const config = await readLocalAgentEdgeConfig({ configDir });
-    await ensureCommandAvailable(config.command, env);
+    // Resolve once: availability and launch must share the same effective
+    // environment (base env merged with the saved non-secret override).
+    const effectiveEnv = mergeEffectiveEnv({
+      baseEnv: env,
+      overrideEnv: config.env,
+    });
+    const resolved = await resolveConfiguredCommand({
+      command: config.command,
+      env: effectiveEnv,
+    });
+    if (!resolved) {
+      throw new Error(`Configured command is unavailable: ${config.command}`);
+    }
 
     const driver = createGenericCliDriver({
-      command: config.command,
+      command: resolved.path,
+      commandType: resolved.type,
       args: config.args,
       cwd: config.cwd,
-      env: { ...env, ...config.env },
+      env: effectiveEnv,
     });
     const edge = await createLocalAgentEdge({
       driver,
@@ -77,30 +89,6 @@ export async function startConfiguredLocalAgentEdge({
     writeStartFailure(output, error);
     throw error;
   }
-}
-
-async function ensureCommandAvailable(command, env) {
-  if (path.isAbsolute(command)) {
-    try {
-      await access(command);
-      return;
-    } catch {
-      throw new Error(`Configured command is unavailable: ${command}`);
-    }
-  }
-
-  const pathValue = env?.PATH ?? "";
-  for (const directory of pathValue.split(path.delimiter)) {
-    if (!directory) continue;
-    try {
-      await access(path.join(directory, command));
-      return;
-    } catch {
-      // Continue looking through PATH entries.
-    }
-  }
-
-  throw new Error(`Configured command is unavailable: ${command}`);
 }
 
 function writeStartFailure(output, error) {
