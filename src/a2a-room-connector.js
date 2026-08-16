@@ -4,7 +4,7 @@ import { ClientFactory } from "@a2a-js/sdk/client";
 export async function runA2ARoomConnector({
   roomBaseUrl,
   agentBaseUrl,
-  side,
+  roomCapability,
   identity,
   log = console.log,
 }) {
@@ -15,7 +15,10 @@ export async function runA2ARoomConnector({
   const callTool = async (name, args) => {
     const response = await fetch(`${roomBaseUrl}/mcp`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${roomCapability}`,
+      },
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: rpcId++,
@@ -38,9 +41,9 @@ export async function runA2ARoomConnector({
   };
 
   const joined = await callTool("join_room", {
-    side,
     public_identity: identity,
   });
+  const side = joined.side;
   const roomId = joined.room.id;
   log(`[${side}] joined as ${identity.display_name}`);
 
@@ -48,7 +51,6 @@ export async function runA2ARoomConnector({
 
   while (true) {
     const waiting = await callTool("wait_turn", {
-      side,
       after_event_id: cursor,
       timeout_ms: 5_000,
     });
@@ -96,7 +98,6 @@ export async function runA2ARoomConnector({
 
     log(`[${side}] ${message}`);
     await callTool("submit_turn", {
-      side,
       turn_id: waiting.turn.turn_id,
       request_id: waiting.turn.request_id,
       action: "reply",

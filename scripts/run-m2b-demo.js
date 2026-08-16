@@ -5,13 +5,22 @@ import { createA2AModelAgentServer } from "../src/a2a-model-agent.js";
 import { runA2ARoomConnector } from "../src/a2a-room-connector.js";
 import { DEMU_IDENTITY } from "../src/demu-identity.js";
 import { loadOmbreContinuity } from "../src/ombre-continuity.js";
+import { EphemeralRoomRegistry } from "../src/ephemeral-room-registry.js";
+import { RoomStore } from "../src/room-store.js";
 
 const requestedRoomPort = Number(process.env.ROOM_PORT ?? 8787);
 const requestedAgentPort = Number(process.env.A2A_PORT ?? 41241);
 const holdOpen = process.env.M2B_HOLD_OPEN !== "0";
 const host = "127.0.0.1";
 
-const { server: roomServer, store } = createRoomServer();
+let store;
+const registry = new EphemeralRoomRegistry({
+  createStore: ({ roomId }) => {
+    store = new RoomStore({ id: roomId, maxTurns: 4 });
+    return store;
+  },
+});
+const { server: roomServer } = createRoomServer({ registry });
 await listen(roomServer, requestedRoomPort, host);
 
 let agent;
@@ -38,22 +47,28 @@ try {
 }
 
 const roomAddress = roomServer.address();
-const roomBaseUrl = `http://${host}:${roomAddress.port}`;
+const roomOrigin = `http://${host}:${roomAddress.port}`;
 
 try {
+  const created = await callGlobalMcp(roomOrigin, "create_room", {});
+  const redeemed = await callGlobalMcp(roomOrigin, "redeem_invite", {
+    invite_code: created.invite_code,
+  });
+  const roomBaseUrl = `${roomOrigin}/rooms/${created.room_id}`;
+
   await Promise.all([
     runA2ARoomConnector({
       roomBaseUrl,
       agentBaseUrl: agent.baseUrl,
-      side: "A",
+      roomCapability: created.side_capability,
       identity: {
         display_name: DEMU_IDENTITY.displayName,
         companion_name: DEMU_IDENTITY.companionName,
       },
     }),
     runFakeConnector({
-      baseUrl: roomBaseUrl,
-      side: "B",
+      roomBaseUrl,
+      roomCapability: redeemed.side_capability,
       identity: {
         display_name: "测试 B",
         companion_name: "观察者 B",
@@ -96,7 +111,7 @@ try {
   for (const event of messages) {
     console.log(`${event.side}: ${event.payload.content}`);
   }
-  console.log(`Observer page: ${roomBaseUrl}`);
+  console.log(`Observer page: ${roomOrigin}`);
   console.log(`Agent Card: ${agent.agentCardUrl}`);
 
   await agent.close();
@@ -126,6 +141,24 @@ if (!holdOpen) {
 
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
+}
+
+async function callGlobalMcp(origin, name, args) {
+  const response = await fetch(`${origin}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name, arguments: args },
+    }),
+  });
+  const body = await response.json();
+  if (body.error) {
+    throw new Error(`${body.error.data?.room_code ?? body.error.code}: ${body.error.message}`);
+  }
+  return body.result.structuredContent;
 }
 
 function listen(server, port, host) {

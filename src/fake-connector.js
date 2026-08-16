@@ -1,8 +1,8 @@
 import { fileURLToPath } from "node:url";
 
 export async function runFakeConnector({
-  baseUrl,
-  side,
+  roomBaseUrl,
+  roomCapability,
   identity,
   script,
   log = console.log,
@@ -12,9 +12,12 @@ export async function runFakeConnector({
   let scriptIndex = 0;
 
   const callTool = async (name, args) => {
-    const response = await fetch(`${baseUrl}/mcp`, {
+    const response = await fetch(`${roomBaseUrl}/mcp`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${roomCapability}`,
+      },
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: rpcId++,
@@ -27,12 +30,12 @@ export async function runFakeConnector({
     return body.result.structuredContent;
   };
 
-  await callTool("join_room", { side, public_identity: identity });
+  const joined = await callTool("join_room", { public_identity: identity });
+  const side = joined.side;
   log(`[${side}] joined as ${identity.display_name}`);
 
   while (true) {
     const waiting = await callTool("wait_turn", {
-      side,
       after_event_id: cursor,
       timeout_ms: 5_000,
     });
@@ -50,7 +53,6 @@ export async function runFakeConnector({
 
     log(`[${side}] ${line.message}`);
     await callTool("submit_turn", {
-      side,
       turn_id: waiting.turn.turn_id,
       request_id: waiting.turn.request_id,
       action: line.action ?? "reply",
@@ -63,7 +65,8 @@ export async function runFakeConnector({
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const side = process.argv[2];
-  const baseUrl = process.env.ROOM_URL ?? "http://127.0.0.1:8787";
+  const roomBaseUrl = process.env.ROOM_URL ?? "http://127.0.0.1:8787";
+  const roomCapability = process.env.ROOM_CAPABILITY;
   const scripts = {
     A: [
       { message: "你好，我是测试 A。" },
@@ -77,11 +80,15 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 
   if (!scripts[side]) {
     console.error("usage: node src/fake-connector.js A|B");
+    console.error("env: ROOM_URL=<scoped room URL ending in /rooms/<id>>, ROOM_CAPABILITY=<side capability>");
+    process.exitCode = 2;
+  } else if (!roomCapability) {
+    console.error("ROOM_CAPABILITY is required");
     process.exitCode = 2;
   } else {
     await runFakeConnector({
-      baseUrl,
-      side,
+      roomBaseUrl,
+      roomCapability,
       identity: { display_name: `测试 ${side}`, companion_name: `观察者 ${side}` },
       script: scripts[side],
     });

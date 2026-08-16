@@ -4,9 +4,45 @@ import { createRoomServer } from "../src/server.js";
 import { runFakeConnector } from "../src/fake-connector.js";
 import { createA2ATestAgentServer } from "../src/a2a-test-agent.js";
 import { runA2ARoomConnector } from "../src/a2a-room-connector.js";
+import { EphemeralRoomRegistry } from "../src/ephemeral-room-registry.js";
+import { RoomStore } from "../src/room-store.js";
+
+async function pairRoom(origin) {
+  const rpc = async (name, args) => {
+    const response = await fetch(`${origin}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: args },
+      }),
+    });
+    const body = await response.json();
+    if (body.error) {
+      throw new Error(`${body.error.data?.room_code ?? body.error.code}: ${body.error.message}`);
+    }
+    return body.result.structuredContent;
+  };
+
+  const created = await rpc("create_room", {});
+  const redeemed = await rpc("redeem_invite", {
+    invite_code: created.invite_code,
+  });
+  return { created, redeemed };
+}
 
 test("A2A side A and fake side B complete the M0 room", async (t) => {
-  const { server: roomServer, store } = createRoomServer({
+  let store;
+  const registry = new EphemeralRoomRegistry({
+    createStore: ({ roomId }) => {
+      store = new RoomStore({ id: roomId, maxTurns: 4 });
+      return store;
+    },
+  });
+  const { server: roomServer } = createRoomServer({
+    registry,
     logger: { error() {} },
   });
   await new Promise((resolve) => {
@@ -14,8 +50,9 @@ test("A2A side A and fake side B complete the M0 room", async (t) => {
   });
   t.after(() => closeServer(roomServer));
 
-  const roomAddress = roomServer.address();
-  const roomBaseUrl = `http://127.0.0.1:${roomAddress.port}`;
+  const origin = `http://127.0.0.1:${roomServer.address().port}`;
+  const { created, redeemed } = await pairRoom(origin);
+  const roomBaseUrl = `${origin}/rooms/${created.room_id}`;
   const agent = await createA2ATestAgentServer();
   t.after(() => agent.close());
 
@@ -35,13 +72,13 @@ test("A2A side A and fake side B complete the M0 room", async (t) => {
     runA2ARoomConnector({
       roomBaseUrl,
       agentBaseUrl: agent.baseUrl,
-      side: "A",
+      roomCapability: created.side_capability,
       identity: { display_name: "A2A 测试 A" },
       log() {},
     }),
     runFakeConnector({
-      baseUrl: roomBaseUrl,
-      side: "B",
+      roomBaseUrl,
+      roomCapability: redeemed.side_capability,
       identity: { display_name: "测试 B" },
       script: [
         { message: "你好，我是测试 B，我收到了。" },

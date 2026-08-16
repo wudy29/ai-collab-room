@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createRoomServer } from "../src/server.js";
 import { runA2ARoomConnector } from "../src/a2a-room-connector.js";
+import { EphemeralRoomRegistry } from "../src/ephemeral-room-registry.js";
+import { RoomStore } from "../src/room-store.js";
 
 const host = "127.0.0.1";
 
@@ -13,18 +15,32 @@ export async function runM2ETwoMachinePrivateSshValidation({
   assertA2ABaseUrl("agentAUrl", agentAUrl);
   assertA2ABaseUrl("agentBUrl", agentBUrl);
 
-  const { server: roomServer, store } = createRoomServer();
+  let store;
+  const registry = new EphemeralRoomRegistry({
+    createStore: ({ roomId }) => {
+      store = new RoomStore({ id: roomId, maxTurns: 4 });
+      return store;
+    },
+  });
+  const { server: roomServer } = createRoomServer({ registry });
   await listen(roomServer, 0, host);
 
   try {
     const roomAddress = roomServer.address();
-    const roomBaseUrl = `http://${host}:${roomAddress.port}`;
+    const roomOrigin = `http://${host}:${roomAddress.port}`;
+
+    const created = await callGlobalMcp(roomOrigin, "create_room", {});
+    const redeemed = await callGlobalMcp(roomOrigin, "redeem_invite", {
+      invite_code: created.invite_code,
+    });
+    assert.equal(redeemed.room_id, created.room_id);
+    const roomBaseUrl = `${roomOrigin}/rooms/${created.room_id}`;
 
     await Promise.all([
       runA2ARoomConnector({
         roomBaseUrl,
         agentBaseUrl: agentAUrl,
-        side: "A",
+        roomCapability: created.side_capability,
         identity: {
           display_name: "Agent A",
           companion_name: "User A",
@@ -34,7 +50,7 @@ export async function runM2ETwoMachinePrivateSshValidation({
       runA2ARoomConnector({
         roomBaseUrl,
         agentBaseUrl: agentBUrl,
-        side: "B",
+        roomCapability: redeemed.side_capability,
         identity: {
           display_name: "Agent B",
           companion_name: "User B",
@@ -61,6 +77,7 @@ export async function runM2ETwoMachinePrivateSshValidation({
 
     return {
       roomBaseUrl,
+      roomOrigin,
       messages,
       close: () => closeServer(roomServer),
     };
@@ -79,7 +96,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   console.log(
     `M2E private SSH validation complete: ${validation.messages.length} messages`,
   );
-  console.log(`Observer page: ${validation.roomBaseUrl}`);
+  console.log(`Observer page: ${validation.roomOrigin}`);
   console.log("M2E two-machine private SSH validation PASS.");
   console.log("Press Ctrl+C to close the local Room.");
 
@@ -92,6 +109,24 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 
   process.once("SIGINT", () => stop(130));
   process.once("SIGTERM", () => stop(143));
+}
+
+async function callGlobalMcp(origin, name, args) {
+  const response = await fetch(`${origin}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name, arguments: args },
+    }),
+  });
+  const body = await response.json();
+  if (body.error) {
+    throw new Error(`${body.error.data?.room_code ?? body.error.code}: ${body.error.message}`);
+  }
+  return body.result.structuredContent;
 }
 
 function assertA2ABaseUrl(name, value) {

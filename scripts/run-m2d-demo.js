@@ -4,6 +4,8 @@ import { createA2AModelAgentServer } from "../src/a2a-model-agent.js";
 import { runA2ARoomConnector } from "../src/a2a-room-connector.js";
 import { DEMU_IDENTITY } from "../src/demu-identity.js";
 import { loadOmbreContinuity } from "../src/ombre-continuity.js";
+import { EphemeralRoomRegistry } from "../src/ephemeral-room-registry.js";
+import { RoomStore } from "../src/room-store.js";
 
 const host = "127.0.0.1";
 const B_PRIVATE_DETAIL = "蓝色纸鹤";
@@ -21,7 +23,14 @@ const B_IDENTITY = Object.freeze({
   continuity: [],
 });
 
-const { server: roomServer, store } = createRoomServer();
+let store;
+const registry = new EphemeralRoomRegistry({
+  createStore: ({ roomId }) => {
+    store = new RoomStore({ id: roomId, maxTurns: 4 });
+    return store;
+  },
+});
+const { server: roomServer } = createRoomServer({ registry });
 let agentA;
 let agentB;
 let cleaning = false;
@@ -48,7 +57,7 @@ process.once("SIGTERM", onSigterm);
 try {
   await listen(roomServer, 0, host);
   const roomAddress = roomServer.address();
-  const roomBaseUrl = `http://${host}:${roomAddress.port}`;
+  const roomOrigin = `http://${host}:${roomAddress.port}`;
 
   const continuityContextA = await loadOmbreContinuity({
     query: "天色变暗时，窗边什么响声提醒先生把院子里晾着的稿纸收进屋？",
@@ -72,11 +81,17 @@ try {
     continuityContext: B_CONTINUITY_CONTEXT,
   });
 
+  const created = await callGlobalMcp(roomOrigin, "create_room", {});
+  const redeemed = await callGlobalMcp(roomOrigin, "redeem_invite", {
+    invite_code: created.invite_code,
+  });
+  const roomBaseUrl = `${roomOrigin}/rooms/${created.room_id}`;
+
   await Promise.all([
     runA2ARoomConnector({
       roomBaseUrl,
       agentBaseUrl: agentA.baseUrl,
-      side: "A",
+      roomCapability: created.side_capability,
       identity: {
         display_name: DEMU_IDENTITY.displayName,
         companion_name: DEMU_IDENTITY.companionName,
@@ -85,7 +100,7 @@ try {
     runA2ARoomConnector({
       roomBaseUrl,
       agentBaseUrl: agentB.baseUrl,
-      side: "B",
+      roomCapability: redeemed.side_capability,
       identity: {
         display_name: B_IDENTITY.displayName,
         companion_name: B_IDENTITY.companionName,
@@ -151,6 +166,24 @@ try {
   process.removeListener("SIGINT", onSigint);
   process.removeListener("SIGTERM", onSigterm);
   await cleanup();
+}
+
+async function callGlobalMcp(origin, name, args) {
+  const response = await fetch(`${origin}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name, arguments: args },
+    }),
+  });
+  const body = await response.json();
+  if (body.error) {
+    throw new Error(`${body.error.data?.room_code ?? body.error.code}: ${body.error.message}`);
+  }
+  return body.result.structuredContent;
 }
 
 function listen(server, port, listenHost) {

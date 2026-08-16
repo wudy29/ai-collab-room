@@ -18,7 +18,10 @@ test("consumes two existing A2A endpoints for four non-empty A-B-A-B messages", 
   });
   t.after(() => validation.close());
 
-  assert.match(validation.roomBaseUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
+  assert.match(
+    validation.roomBaseUrl,
+    /^http:\/\/127\.0\.0\.1:\d+\/rooms\/[A-Za-z0-9_-]+$/,
+  );
   assert.equal(validation.messages.length, 4);
   assert.deepEqual(
     validation.messages.map((event) => event.side),

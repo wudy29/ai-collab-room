@@ -2,20 +2,56 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createRoomServer } from "../src/server.js";
 import { runFakeConnector } from "../src/fake-connector.js";
+import { EphemeralRoomRegistry } from "../src/ephemeral-room-registry.js";
+import { RoomStore } from "../src/room-store.js";
+
+async function pairRoom(origin) {
+  const rpc = async (name, args) => {
+    const response = await fetch(`${origin}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: args },
+      }),
+    });
+    const body = await response.json();
+    if (body.error) {
+      throw new Error(`${body.error.data?.room_code ?? body.error.code}: ${body.error.message}`);
+    }
+    return body.result.structuredContent;
+  };
+
+  const created = await rpc("create_room", {});
+  const redeemed = await rpc("redeem_invite", {
+    invite_code: created.invite_code,
+  });
+  return { created, redeemed };
+}
 
 test("two fake connectors complete a strict four-message room", async (t) => {
-  const { server, store } = createRoomServer({ logger: { error() {} } });
+  let store;
+  const registry = new EphemeralRoomRegistry({
+    createStore: ({ roomId }) => {
+      store = new RoomStore({ id: roomId, maxTurns: 4 });
+      return store;
+    },
+  });
+  const { server } = createRoomServer({ registry, logger: { error() {} } });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => server.close());
 
-  const address = server.address();
-  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const { created, redeemed } = await pairRoom(origin);
+  const roomBaseUrl = `${origin}/rooms/${created.room_id}`;
   const logs = [];
 
   await Promise.all([
     runFakeConnector({
-      baseUrl,
-      side: "A",
+      roomBaseUrl,
+      roomCapability: created.side_capability,
       identity: { display_name: "测试 A" },
       script: [
         { message: "你好，我是测试 A。" },
@@ -24,8 +60,8 @@ test("two fake connectors complete a strict four-message room", async (t) => {
       log: (line) => logs.push(line),
     }),
     runFakeConnector({
-      baseUrl,
-      side: "B",
+      roomBaseUrl,
+      roomCapability: redeemed.side_capability,
       identity: { display_name: "测试 B" },
       script: [
         { message: "你好，我是测试 B，我收到了。" },
@@ -48,26 +84,37 @@ test("two fake connectors complete a strict four-message room", async (t) => {
   assert.ok(logs.some((line) => line.includes("room ended")) || logs.some((line) => line.includes("好，结束")));
 });
 
-test("observer state endpoint returns the shared event history", async (t) => {
+test("observer state endpoint returns the first room's shared event history", async (t) => {
   const { server } = createRoomServer({ logger: { error() {} } });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => server.close());
-  const address = server.address();
-  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const origin = `http://127.0.0.1:${server.address().port}`;
 
-  const rpc = async (id, name, args) => {
-    const response = await fetch(`${baseUrl}/mcp`, {
+  const { created, redeemed } = await pairRoom(origin);
+  const roomUrl = `${origin}/rooms/${created.room_id}`;
+
+  const rpc = async (id, name, args, capability) => {
+    const response = await fetch(`${roomUrl}/mcp`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }),
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${capability}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name, arguments: args },
+      }),
     });
     return response.json();
   };
 
-  await rpc(1, "join_room", { side: "A", public_identity: { display_name: "A" } });
-  await rpc(2, "join_room", { side: "B", public_identity: { display_name: "B" } });
+  await rpc(1, "join_room", { public_identity: { display_name: "A" } }, created.side_capability);
+  await rpc(2, "join_room", { public_identity: { display_name: "B" } }, redeemed.side_capability);
 
-  const snapshot = await fetch(`${baseUrl}/api/state`).then((response) => response.json());
+  const snapshot = await fetch(`${origin}/api/state`).then((response) => response.json());
+  assert.equal(snapshot.room.id, created.room_id);
   assert.equal(snapshot.room.status, "active");
   assert.equal(snapshot.sides.A.identity.display_name, "A");
   assert.equal(snapshot.sides.B.identity.display_name, "B");
