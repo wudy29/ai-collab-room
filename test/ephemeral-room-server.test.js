@@ -494,56 +494,129 @@ test("authorized A/B exchange preserves the turn protocol and derives side from 
   assert.equal(store.events.filter((event) => event.type === "side_joined").length, 2);
 });
 
-test("root observer binds to the first created room and is never rebound", async (t) => {
-  const stores = [];
-  const registry = new EphemeralRoomRegistry({
-    createStore: createStoreFactory(stores),
+test("observer bootstrap issues a one-time room-scoped cookie and redirects once", async (t) => {
+  const { origin } = await startServer(t);
+  const created = await createRoom(origin);
+
+  const first = await fetch(`${origin}/observe/${created.observer_bootstrap_token}`, {
+    redirect: "manual",
   });
-  const { origin } = await startServer(t, { registry });
+  assert.equal(first.status, 303);
+  assert.equal(first.headers.get("location"), `/rooms/${created.room_id}`);
+  assert.equal(first.headers.get("referrer-policy"), "no-referrer");
+  assert.ok(
+    !first.headers.get("location").includes(created.observer_bootstrap_token),
+    "the redirect target must not contain the bootstrap token",
+  );
 
-  // root page and state are usable before any room exists
-  const page = await fetch(`${origin}/`);
-  assert.equal(page.status, 200);
-  assert.match(await page.text(), /双边 AI 协作室 M0/);
+  const cookie = first.headers.get("set-cookie");
+  assert.match(
+    cookie,
+    new RegExp(
+      `^room_observer=[A-Za-z0-9_-]+; Secure; HttpOnly; SameSite=Strict; Path=/rooms/${created.room_id}$`,
+    ),
+  );
 
-  const stateBefore = await fetch(`${origin}/api/state`).then((response) => response.json());
-  assert.equal(stateBefore.room.id, null);
-  assert.equal(stateBefore.room.status, "waiting");
-  assert.deepEqual(stateBefore.events, []);
+  // the token is single-use
+  const reused = await fetch(`${origin}/observe/${created.observer_bootstrap_token}`, {
+    redirect: "manual",
+  });
+  assert.equal(reused.status, 404);
 
-  const endBefore = await fetch(`${origin}/api/end`, { method: "POST" });
-  assert.equal(endBefore.status, 404);
+  // an invalid token fails generically
+  const invalid = await fetch(`${origin}/observe/not-a-real-token`, {
+    redirect: "manual",
+  });
+  assert.equal(invalid.status, 404);
+});
 
-  // an SSE connection opened before any room exists
-  const eventsResponse = await fetch(`${origin}/events`);
-  assert.equal(eventsResponse.status, 200);
-  const sse = startSseReader(eventsResponse.body.getReader());
-  t.after(() => sse.close());
-
-  // create the first room: the existing SSE must follow it without reconnect
+test("scoped observer surfaces require the room-specific observer cookie", async (t) => {
+  const { origin } = await startServer(t);
   const first = await createRoom(origin);
+  const second = await createRoom(origin);
+
+  const bootstrap = await fetch(`${origin}/observe/${first.observer_bootstrap_token}`, {
+    redirect: "manual",
+  });
+  assert.equal(bootstrap.status, 303);
+  const sessionId = bootstrap.headers.get("set-cookie").split(";")[0].split("=")[1];
   const room1Url = `${origin}/rooms/${first.room_id}`;
+  const room2Url = `${origin}/rooms/${second.room_id}`;
+
+  // missing cookie
+  assert.equal((await fetch(room1Url)).status, 404);
+  assert.equal((await fetch(`${room1Url}/api/state`)).status, 404);
+  assert.equal((await fetch(`${room1Url}/events`)).status, 404);
+
+  // invalid cookie value
+  const invalidHeaders = { cookie: "room_observer=not-a-real-session" };
+  assert.equal((await fetch(room1Url, { headers: invalidHeaders })).status, 404);
+  assert.equal(
+    (await fetch(`${room1Url}/api/state`, { headers: invalidHeaders })).status,
+    404,
+  );
+  assert.equal(
+    (await fetch(`${room1Url}/events`, { headers: invalidHeaders })).status,
+    404,
+  );
+
+  // cross-room cookie: the first room's session on the second room
+  const crossHeaders = { cookie: `room_observer=${sessionId}` };
+  assert.equal((await fetch(room2Url, { headers: crossHeaders })).status, 404);
+  assert.equal(
+    (await fetch(`${room2Url}/api/state`, { headers: crossHeaders })).status,
+    404,
+  );
+  assert.equal(
+    (await fetch(`${room2Url}/events`, { headers: crossHeaders })).status,
+    404,
+  );
+
+  // a valid session against the wrong room id
+  assert.equal(
+    (await fetch(`${origin}/rooms/not-a-room/api/state`, { headers: crossHeaders })).status,
+    404,
+  );
+
+  // the session works only for its own room
+  assert.equal((await fetch(room1Url, { headers: crossHeaders })).status, 200);
+  assert.equal(
+    (await fetch(`${room1Url}/api/state`, { headers: crossHeaders })).status,
+    200,
+  );
+});
+
+test("scoped observer state and SSE serve only the authorized room", async (t) => {
+  const { origin } = await startServer(t);
+
+  const first = await createRoom(origin);
+  const redeemed = await redeemInvite(origin, first.invite_code);
+  const room1Url = `${origin}/rooms/${first.room_id}`;
+
+  // room 1: both sides join and complete turn 1
   await rpc(
     room1Url,
     "join_room",
     { public_identity: { display_name: "A" } },
     { capability: first.side_capability },
   );
-  const sseText = await sse.waitFor("side_joined");
-  assert.ok(sseText.includes(first.room_id), "root SSE must carry first room events");
-
-  const redeemed1 = await redeemInvite(origin, first.invite_code);
   await rpc(
     room1Url,
     "join_room",
     { public_identity: { display_name: "B" } },
-    { capability: redeemed1.side_capability },
+    { capability: redeemed.side_capability },
   );
-  await sse.waitFor("room_started");
+  await rpc(
+    room1Url,
+    "submit_turn",
+    { turn_id: "turn-1", request_id: "req-1-A", action: "reply", message: "m1" },
+    { capability: first.side_capability },
+  );
 
-  // create a second room and run it to completion
+  // room 2: create, join, and submit turn 1; its events must never reach
+  // room 1's observer
   const second = await createRoom(origin);
-  const redeemed = await redeemInvite(origin, second.invite_code);
+  const redeemed2 = await redeemInvite(origin, second.invite_code);
   const room2Url = `${origin}/rooms/${second.room_id}`;
   await rpc(
     room2Url,
@@ -555,57 +628,81 @@ test("root observer binds to the first created room and is never rebound", async
     room2Url,
     "join_room",
     { public_identity: { display_name: "B2" } },
-    { capability: redeemed.side_capability },
+    { capability: redeemed2.side_capability },
   );
   await rpc(
     room2Url,
     "submit_turn",
-    { turn_id: "turn-1", request_id: "req-1-A", action: "reply", message: "r2 a" },
+    { turn_id: "turn-1", request_id: "req-1-A", action: "reply", message: "r2 m1" },
     { capability: second.side_capability },
-  );
-  await rpc(
-    room2Url,
-    "submit_turn",
-    { turn_id: "turn-2", request_id: "req-2-B", action: "reply", message: "r2 b" },
-    { capability: redeemed.side_capability },
-  );
-  await rpc(
-    room2Url,
-    "submit_turn",
-    { turn_id: "turn-3", request_id: "req-3-A", action: "reply", message: "r2 a2" },
-    { capability: second.side_capability },
-  );
-  await rpc(
-    room2Url,
-    "submit_turn",
-    { turn_id: "turn-4", request_id: "req-4-B", action: "end", message: "r2 b2" },
-    { capability: redeemed.side_capability },
   );
 
-  // give any (wrong) rebind a chance to flush, then verify no second-room
-  // events ever reached the root SSE
+  // bootstrap a room-1 observer session
+  const bootstrap = await fetch(`${origin}/observe/${first.observer_bootstrap_token}`, {
+    redirect: "manual",
+  });
+  assert.equal(bootstrap.status, 303);
+  const sessionId = bootstrap.headers.get("set-cookie").split(";")[0].split("=")[1];
+  const cookieHeaders = { cookie: `room_observer=${sessionId}` };
+
+  // the scoped shell is the observation page without an end surface
+  const shell = await fetch(room1Url, { headers: cookieHeaders });
+  assert.equal(shell.status, 200);
+  const pageText = await shell.text();
+  assert.ok(!pageText.includes("结束房间"), "scoped shell must not contain an end button");
+  assert.ok(!pageText.includes("/api/end"), "scoped shell must not reference an HTTP end route");
+  assert.ok(pageText.includes("fetch('api/state')"), "shell must fetch the scoped-relative state URL");
+  assert.ok(pageText.includes("events?after="), "shell must use the scoped-relative EventSource URL");
+
+  // state belongs to room 1 only
+  const state = await fetch(`${room1Url}/api/state`, { headers: cookieHeaders }).then((response) => response.json());
+  assert.equal(state.room.id, first.room_id);
+  assert.equal(state.room.status, "active");
+  assert.equal(state.events.filter((event) => event.type === "message").length, 1);
+  assert.ok(
+    !state.events.some((event) => event.room_id === second.room_id),
+    "room 1 state must not contain room 2 events",
+  );
+
+  // SSE replays room 1 history and delivers room 1 live events
+  const eventsResponse = await fetch(`${room1Url}/events?after=0`, { headers: cookieHeaders });
+  assert.equal(eventsResponse.status, 200);
+  const sse = startSseReader(eventsResponse.body.getReader());
+  t.after(() => sse.close());
+  await sse.waitFor("turn_ready");
+
+  await rpc(
+    room1Url,
+    "submit_turn",
+    { turn_id: "turn-2", request_id: "req-2-B", action: "reply", message: "m2" },
+    { capability: redeemed.side_capability },
+  );
+  await sse.waitFor("m2");
+
+  // room 2 activity never reaches room 1's SSE
+  await rpc(
+    room2Url,
+    "submit_turn",
+    { turn_id: "turn-2", request_id: "req-2-B", action: "reply", message: "r2 m2" },
+    { capability: redeemed2.side_capability },
+  );
   await new Promise((resolve) => setTimeout(resolve, 150));
   assert.ok(
     !sse.text().includes(second.room_id),
-    "root SSE must not rebind to the second room",
+    "room 1 SSE must not carry room 2 events",
   );
+});
 
-  // root state still serves the first room
-  const stateAfter = await fetch(`${origin}/api/state`).then((response) => response.json());
-  assert.equal(stateAfter.room.id, first.room_id);
-  assert.equal(stateAfter.room.status, "active");
+test("root observer surfaces are removed", async (t) => {
+  const { origin } = await startServer(t);
+  const created = await createRoom(origin);
 
-  // root /api/end ends only the first room
-  const endResponse = await fetch(`${origin}/api/end`, { method: "POST" });
-  assert.equal(endResponse.status, 200);
-  const stateEnded = await fetch(`${origin}/api/state`).then((response) => response.json());
-  assert.equal(stateEnded.room.id, first.room_id);
-  assert.equal(stateEnded.room.status, "ended");
-  await sse.waitFor("room_ended");
-
-  assert.equal(stores.length, 2);
-  assert.equal(stores[0].room.id, first.room_id);
-  assert.equal(stores[0].room.status, "ended");
-  assert.equal(stores[1].room.id, second.room_id);
-  assert.equal(stores[1].room.status, "ended");
+  assert.equal((await fetch(`${origin}/`)).status, 404);
+  assert.equal((await fetch(`${origin}/api/state`)).status, 404);
+  assert.equal((await fetch(`${origin}/events`)).status, 404);
+  assert.equal((await fetch(`${origin}/api/end`, { method: "POST" })).status, 404);
+  assert.equal(
+    (await fetch(`${origin}/rooms/${created.room_id}/api/end`, { method: "POST" })).status,
+    404,
+  );
 });

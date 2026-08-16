@@ -15,7 +15,7 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, "..", "public");
-const ROOT_OBSERVER_TITLE = "双边 AI 协作室 M0";
+const OBSERVER_COOKIE_NAME = "room_observer";
 
 export function createRoomServer({
   registry = new EphemeralRoomRegistry(),
@@ -23,54 +23,10 @@ export function createRoomServer({
 } = {}) {
   const storesByRoomId = new Map();
   const roomClients = new Map();
-  const pendingRootClients = new Set();
-  let firstRoomId = null;
 
   const server = http.createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://localhost");
-
-      if (request.method === "GET" && url.pathname === "/") {
-        return sendFile(response, join(PUBLIC_DIR, "index.html"), "text/html; charset=utf-8");
-      }
-
-      if (request.method === "GET" && url.pathname === "/api/state") {
-        if (firstRoomId === null) return sendJson(response, 200, emptySnapshot());
-        return sendJson(response, 200, storesByRoomId.get(firstRoomId).snapshotFor());
-      }
-
-      if (request.method === "GET" && url.pathname === "/events") {
-        const after = Number(url.searchParams.get("after") ?? request.headers["last-event-id"] ?? 0);
-        response.writeHead(200, {
-          "content-type": "text/event-stream; charset=utf-8",
-          "cache-control": "no-cache, no-transform",
-          connection: "keep-alive",
-          "access-control-allow-origin": "*",
-        });
-        response.write("retry: 1000\n\n");
-
-        if (firstRoomId === null) {
-          const client = { response, lastEventId: 0 };
-          pendingRootClients.add(client);
-          request.on("close", () => pendingRootClients.delete(client));
-          return;
-        }
-
-        const store = storesByRoomId.get(firstRoomId);
-        for (const event of store.eventsAfter(after)) writeSse(response, event);
-        const client = { response, lastEventId: store.lastEventId() };
-        addRoomClient(firstRoomId, client);
-        request.on("close", () => removeRoomClient(firstRoomId, client));
-        return;
-      }
-
-      if (request.method === "POST" && url.pathname === "/api/end") {
-        if (firstRoomId === null) return sendJson(response, 404, { error: "not_found" });
-        const store = storesByRoomId.get(firstRoomId);
-        const result = store.end("human_end");
-        broadcastNewEvents(firstRoomId);
-        return sendJson(response, 200, result);
-      }
 
       if (request.method === "POST" && url.pathname === "/mcp") {
         const body = await readJson(request);
@@ -81,9 +37,9 @@ export function createRoomServer({
         return sendJson(response, 200, rpcResponse);
       }
 
-      const scoped = /^\/rooms\/([^/]+)\/mcp$/.exec(url.pathname);
-      if (request.method === "POST" && scoped) {
-        const roomId = scoped[1];
+      const scopedMcp = /^\/rooms\/([^/]+)\/mcp$/.exec(url.pathname);
+      if (request.method === "POST" && scopedMcp) {
+        const roomId = scopedMcp[1];
         const capability = bearerCapability(request.headers.authorization);
 
         let context;
@@ -109,6 +65,70 @@ export function createRoomServer({
         return sendJson(response, 200, rpcResponse);
       }
 
+      const observe = /^\/observe\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "GET" && observe) {
+        let observer;
+        try {
+          observer = registry.consumeObserverBootstrap(observe[1]);
+        } catch (error) {
+          if (error instanceof RoomError) {
+            return sendJson(response, 404, { error: "not_found" });
+          }
+          throw error;
+        }
+
+        const cookie = [
+          `${OBSERVER_COOKIE_NAME}=${observer.observerSessionId}`,
+          "Secure",
+          "HttpOnly",
+          "SameSite=Strict",
+          `Path=/rooms/${observer.roomId}`,
+        ].join("; ");
+
+        response.writeHead(303, {
+          location: `/rooms/${observer.roomId}`,
+          "set-cookie": cookie,
+          "referrer-policy": "no-referrer",
+        });
+        return response.end();
+      }
+
+      const scopedState = /^\/rooms\/([^/]+)\/api\/state$/.exec(url.pathname);
+      if (request.method === "GET" && scopedState) {
+        const store = authorizeObserverStore(registry, scopedState[1], request);
+        if (store === null) return sendJson(response, 404, { error: "not_found" });
+        return sendJson(response, 200, store.snapshotFor());
+      }
+
+      const scopedEvents = /^\/rooms\/([^/]+)\/events$/.exec(url.pathname);
+      if (request.method === "GET" && scopedEvents) {
+        const roomId = scopedEvents[1];
+        const store = authorizeObserverStore(registry, roomId, request);
+        if (store === null) return sendJson(response, 404, { error: "not_found" });
+
+        const after = Number(url.searchParams.get("after") ?? request.headers["last-event-id"] ?? 0);
+        response.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache, no-transform",
+          connection: "keep-alive",
+          "access-control-allow-origin": "*",
+        });
+        response.write("retry: 1000\n\n");
+        for (const event of store.eventsAfter(after)) writeSse(response, event);
+
+        const client = { response, lastEventId: store.lastEventId() };
+        addRoomClient(roomId, client);
+        request.on("close", () => removeRoomClient(roomId, client));
+        return;
+      }
+
+      const scopedShell = /^\/rooms\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "GET" && scopedShell) {
+        const store = authorizeObserverStore(registry, scopedShell[1], request);
+        if (store === null) return sendJson(response, 404, { error: "not_found" });
+        return sendFile(response, join(PUBLIC_DIR, "index.html"), "text/html; charset=utf-8");
+      }
+
       sendJson(response, 404, { error: "not_found" });
     } catch (error) {
       if (error instanceof RoomError) {
@@ -123,7 +143,6 @@ export function createRoomServer({
     for (const clients of roomClients.values()) {
       for (const client of clients) client.response.write(": heartbeat\n\n");
     }
-    for (const client of pendingRootClients) client.response.write(": heartbeat\n\n");
   }, 15_000);
   heartbeat.unref();
 
@@ -132,9 +151,7 @@ export function createRoomServer({
     for (const clients of roomClients.values()) {
       for (const client of clients) client.response.end();
     }
-    for (const client of pendingRootClients) client.response.end();
     roomClients.clear();
-    pendingRootClients.clear();
   });
 
   return { server, registry };
@@ -150,7 +167,6 @@ export function createRoomServer({
         const created = registry.createRoom();
         const { store } = registry.authorize(created.roomId, created.sideCapability);
         storesByRoomId.set(created.roomId, store);
-        if (firstRoomId === null) bindFirstRoom(created.roomId, store);
         return {
           room_id: created.roomId,
           invite_code: created.inviteCode,
@@ -170,15 +186,6 @@ export function createRoomServer({
       default:
         throw new RoomError("UNKNOWN_TOOL", `unknown tool: ${name}`);
     }
-  }
-
-  function bindFirstRoom(roomId, store) {
-    firstRoomId = roomId;
-    for (const client of pendingRootClients) {
-      client.lastEventId = store.lastEventId();
-      addRoomClient(firstRoomId, client);
-    }
-    pendingRootClients.clear();
   }
 
   function addRoomClient(roomId, client) {
@@ -208,26 +215,28 @@ export function createRoomServer({
   }
 }
 
-function emptySnapshot() {
-  return {
-    room: {
-      id: null,
-      title: ROOT_OBSERVER_TITLE,
-      status: "waiting",
-      current_side: null,
-      turn_number: 0,
-      max_turns: 8,
-      created_at: null,
-      ended_at: null,
-    },
-    sides: {
-      A: { joined: false, identity: null },
-      B: { joined: false, identity: null },
-    },
-    turn: null,
-    events: [],
-    last_event_id: 0,
-  };
+function authorizeObserverStore(registry, roomId, request) {
+  const sessionId = roomObserverSession(request.headers.cookie);
+  if (sessionId === null) return null;
+
+  try {
+    return registry.authorizeObserver(roomId, sessionId).store;
+  } catch (error) {
+    if (error instanceof RoomError) return null;
+    throw error;
+  }
+}
+
+function roomObserverSession(cookieHeader) {
+  if (typeof cookieHeader !== "string") return null;
+  for (const part of cookieHeader.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator === -1) continue;
+    const name = part.slice(0, separator).trim();
+    const value = part.slice(separator + 1).trim();
+    if (name === OBSERVER_COOKIE_NAME && value.length > 0) return value;
+  }
+  return null;
 }
 
 function bearerCapability(header) {

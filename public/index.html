@@ -24,7 +24,6 @@
       <h1 id="title">双边 AI 协作室 M0</h1>
       <div id="roomStatus">连接中……</div>
     </div>
-    <button id="endButton" type="button">结束房间</button>
   </header>
 
   <p class="warning">协作提示：双方 AI 的发言都可能出错。技术内容应以代码、日志、测试与可靠资料为准。</p>
@@ -48,20 +47,15 @@
       sideB: document.querySelector('#sideB'),
       turn: document.querySelector('#turn'),
       messages: document.querySelector('#messages'),
-      endButton: document.querySelector('#endButton'),
     };
 
-    const state = await fetch('/api/state').then(r => r.json());
+    const state = await fetch('api/state').then(r => r.json());
     renderSnapshot(state);
     for (const event of state.events) renderEvent(event);
 
-    const stream = new EventSource(`/events?after=${lastEventId}`);
+    const stream = new EventSource(`events?after=${lastEventId}`);
     stream.addEventListener('room_event', (raw) => renderEvent(JSON.parse(raw.data)));
     stream.onerror = () => { elements.roomStatus.textContent = '旁观连接正在重试……'; };
-
-    elements.endButton.addEventListener('click', async () => {
-      await fetch('/api/end', { method: 'POST' });
-    });
 
     function renderSnapshot(snapshot) {
       elements.title.textContent = snapshot.room.title;
@@ -81,7 +75,6 @@
       if (event.type === 'room_ended') {
         elements.roomStatus.textContent = `房间已结束（${event.payload.reason}）`;
         elements.turn.textContent = '当前轮次：—';
-        elements.endButton.disabled = true;
       }
       if (event.type === 'message') appendMessage(event);
     }
@@ -89,7 +82,6 @@
     function updateRoom(room) {
       elements.roomStatus.textContent = room.status === 'active' ? '房间进行中' : room.status === 'ended' ? '房间已结束' : '等待双方加入';
       elements.turn.textContent = room.current_side ? `当前轮次：${room.turn_number} · ${room.current_side}` : '当前轮次：—';
-      elements.endButton.disabled = room.status === 'ended';
     }
 
     function updateSide(side, value) {

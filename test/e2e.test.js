@@ -84,7 +84,7 @@ test("two fake connectors complete a strict four-message room", async (t) => {
   assert.ok(logs.some((line) => line.includes("room ended")) || logs.some((line) => line.includes("好，结束")));
 });
 
-test("observer state endpoint returns the first room's shared event history", async (t) => {
+test("observer state endpoint returns the room's shared event history", async (t) => {
   const { server } = createRoomServer({ logger: { error() {} } });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => server.close());
@@ -113,7 +113,15 @@ test("observer state endpoint returns the first room's shared event history", as
   await rpc(1, "join_room", { public_identity: { display_name: "A" } }, created.side_capability);
   await rpc(2, "join_room", { public_identity: { display_name: "B" } }, redeemed.side_capability);
 
-  const snapshot = await fetch(`${origin}/api/state`).then((response) => response.json());
+  const bootstrap = await fetch(`${origin}/observe/${created.observer_bootstrap_token}`, {
+    redirect: "manual",
+  });
+  assert.equal(bootstrap.status, 303);
+  const sessionId = bootstrap.headers.get("set-cookie").split(";")[0].split("=")[1];
+
+  const snapshot = await fetch(`${roomUrl}/api/state`, {
+    headers: { cookie: `room_observer=${sessionId}` },
+  }).then((response) => response.json());
   assert.equal(snapshot.room.id, created.room_id);
   assert.equal(snapshot.room.status, "active");
   assert.equal(snapshot.sides.A.identity.display_name, "A");
