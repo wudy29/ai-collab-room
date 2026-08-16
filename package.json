@@ -19,7 +19,10 @@
     "m2d:demo": "node scripts/run-m2d-demo.js",
     "m2e:validate": "node scripts/run-m2e-two-machine-private-ssh-validation.js",
     "edge:setup": "node local-agent-edge/onboarding.js setup",
-    "edge:start": "node local-agent-edge/onboarding.js start"
+    "edge:start": "node local-agent-edge/onboarding.js start",
+    "cloud-room:setup": "node local-agent-edge/cloud-room.js setup",
+    "cloud-room:create": "node local-agent-edge/cloud-room.js create",
+    "cloud-room:join": "node local-agent-edge/cloud-room.js join"
   },
   "dependencies": {
     "@a2a-js/sdk": "1.0.0",

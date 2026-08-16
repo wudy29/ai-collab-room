@@ -2,3 +2,4 @@
 node_modules/
 *.log
 .local-agent-edge.json
+.cloud-room.json

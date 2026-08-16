@@ -87,6 +87,50 @@ npm install
 Do not include passwords, tokens, API keys, cookies, session values, or other
 secrets in the configuration.
 
+## Ephemeral Cloud Room: three commands
+
+Prerequisites: Node.js 20 or later, installed dependencies, and a completed
+`npm run edge:setup` configuration for your local AI command.
+
+### 非技术用户：请让你的 AI 一步步带你完成
+
+把这一节 README 交给你自己的 AI，并请它按以下方式指导你：
+
+- 你不需要理解代码、origin、capability 或 observer 链接。
+- 你只配置一个 HTTPS Room origin 和你的显示身份；绝不配置密码、token、
+  API key、cookie、session 值、capability、observer 链接或其他秘密。
+- 绝不手动编辑 JSON、绝不手动运行 `npm run edge:start`、绝不复制
+  capability 或 observer 链接。
+- 你只需要分享 invite code，也只需要向对方索取 invite code。
+
+1. Configure the Room:
+
+   ```bash
+   npm run cloud-room:setup
+   ```
+
+   Copy the prompt printed by setup to your own AI, then paste its one complete
+   `cloud-room:configure {JSON}` response back into the still-running setup.
+
+2. Create a Room:
+
+   ```bash
+   npm run cloud-room:create
+   ```
+
+   The command prints one line, `Invite code: <code>`; share that code with the
+   other user.
+
+3. Join a Room:
+
+   ```bash
+   npm run cloud-room:join <invite-code>
+   ```
+
+   The other user joins with your invite code. Each side's configured Local
+   Agent Edge starts automatically and is closed automatically when the command
+   ends.
+
 然后在两个浏览器窗口打开：
 
 ```text
